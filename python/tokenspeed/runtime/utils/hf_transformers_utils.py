@@ -43,6 +43,7 @@ from transformers import (
 from transformers.utils import cached_file
 
 from tokenspeed.runtime.configs import (
+    AfmoeConfig,
     DeepseekV4Config,
     KimiK2Config,
     KimiK25Config,
@@ -56,6 +57,7 @@ from tokenspeed.runtime.configs import (
 from tokenspeed.runtime.utils import lru_cache_frozenset
 
 _CONFIG_REGISTRY: dict[str, type[PretrainedConfig]] = {
+    AfmoeConfig.model_type: AfmoeConfig,
     Qwen2Config.model_type: Qwen2Config,
     Qwen3Config.model_type: Qwen3Config,
     Qwen3MoeConfig.model_type: Qwen3MoeConfig,

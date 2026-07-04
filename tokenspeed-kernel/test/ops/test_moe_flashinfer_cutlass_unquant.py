@@ -18,27 +18,31 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-"""Runtime configuration exports."""
+from __future__ import annotations
 
-from tokenspeed.runtime.configs.afmoe_config import AfmoeConfig
-from tokenspeed.runtime.configs.deepseek_v4_config import DeepseekV4Config
-from tokenspeed.runtime.configs.kimi_k2_config import KimiK2Config
-from tokenspeed.runtime.configs.kimi_k25_config import KimiK25Config
-from tokenspeed.runtime.configs.minimax_m2_config import MiniMaxM2Config
-from tokenspeed.runtime.configs.qwen2_config import Qwen2Config
-from tokenspeed.runtime.configs.qwen3_5_config import Qwen3_5Config, Qwen3_5MoeConfig
-from tokenspeed.runtime.configs.qwen3_config import Qwen3Config
-from tokenspeed.runtime.configs.qwen3_moe_config import Qwen3MoeConfig
+import torch
 
-__all__ = [
-    "AfmoeConfig",
-    "DeepseekV4Config",
-    "Qwen2Config",
-    "Qwen3Config",
-    "Qwen3MoeConfig",
-    "Qwen3_5Config",
-    "Qwen3_5MoeConfig",
-    "MiniMaxM2Config",
-    "KimiK2Config",
-    "KimiK25Config",
-]
+from tokenspeed_kernel.ops.moe.flashinfer.cutlass_unquant import (
+    _autotune_lock,
+    _autotuned_buckets,
+    _tune_max_num_tokens,
+)
+
+
+def test_unquant_cutlass_tune_bucket_uses_8192_floor_and_power_of_two_ceiling():
+    assert _tune_max_num_tokens(1) == 8192
+    assert _tune_max_num_tokens(8192) == 8192
+    assert _tune_max_num_tokens(8193) == 16384
+    assert _tune_max_num_tokens(16384) == 16384
+
+
+def test_unquant_cutlass_autotune_state_is_per_module_bucket_set():
+    first = torch.nn.Module()
+    second = torch.nn.Module()
+
+    _autotuned_buckets(first).add(8192)
+
+    assert _autotuned_buckets(first) == {8192}
+    assert _autotuned_buckets(second) == set()
+    assert _autotune_lock(first) is _autotune_lock(first)
+    assert _autotune_lock(first) is not _autotune_lock(second)

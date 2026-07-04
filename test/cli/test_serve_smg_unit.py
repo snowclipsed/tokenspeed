@@ -34,7 +34,7 @@ import pytest
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.join(REPO_ROOT, "python"))
 
-from tokenspeed.cli._argsplit import OrchestratorOpts
+from tokenspeed.cli._argsplit import OrchestratorOpts, split_argv
 from tokenspeed.cli.serve_smg import (
     _DEFAULT_SMG_DISABLE_FLAGS,
     DEEPSEEK_V4_REASONING_PARSER,
@@ -45,10 +45,14 @@ from tokenspeed.cli.serve_smg import (
     _gateway_args_with_default_port,
     _gateway_args_with_default_prometheus_port,
     _gateway_args_with_default_reasoning_parser,
+    _gateway_args_with_default_trinity_chat_template,
     _gateway_args_with_defaults,
     _gateway_args_with_smg_disable_defaults,
     _is_deepseek_v4_model,
+    _needs_trinity_chat_template,
     _prewarm_hf_tokenizer,
+    _trinity_chat_template_path,
+    _trinity_uses_thinking_prompt,
     _user_host_port_from_gateway_args,
     _user_model_id,
     run_smg,
@@ -66,6 +70,13 @@ def _make_proc(returncode: int | None = None) -> MagicMock:
     proc.kill = MagicMock()
     proc.wait = AsyncMock(return_value=returncode if returncode is not None else 0)
     return proc
+
+
+def test_default_gateway_startup_timeout_matches_long_jit_window():
+    split = split_argv(["--model", "/tmp/x"])
+
+    assert split.opts.engine_startup_timeout == 1800
+    assert split.opts.gateway_startup_timeout == 1800
 
 
 def test_gateway_args_default_port_is_8000():
@@ -151,6 +162,77 @@ def test_gateway_args_defaults_preserve_user_policy():
     assert gateway_args.count("--policy") == 1
     idx = gateway_args.index("--policy")
     assert gateway_args[idx + 1] == "round_robin"
+
+
+def test_gateway_args_default_trinity_chat_template_for_trinity_models():
+    gateway_args = _gateway_args_with_default_trinity_chat_template(
+        ["--model", "arcee-ai/Trinity-Mini"]
+    )
+
+    assert "--chat-template" in gateway_args
+    idx = gateway_args.index("--chat-template")
+    assert gateway_args[idx + 1] == _trinity_chat_template_path(
+        "arcee-ai/Trinity-Mini"
+    )
+    assert os.path.basename(gateway_args[idx + 1]) == "trinity_thinking.jinja"
+    assert os.path.isfile(gateway_args[idx + 1])
+
+
+def test_gateway_args_default_trinity_chat_template_keeps_nano_non_thinking():
+    gateway_args = _gateway_args_with_default_trinity_chat_template(
+        ["--model", "arcee-ai/Trinity-Nano-Preview"]
+    )
+
+    idx = gateway_args.index("--chat-template")
+    assert gateway_args[idx + 1] == _trinity_chat_template_path(
+        "arcee-ai/Trinity-Nano-Preview"
+    )
+    assert os.path.basename(gateway_args[idx + 1]) == "trinity_basic.jinja"
+
+
+def test_gateway_args_default_trinity_chat_template_preserves_user_override():
+    gateway_args = _gateway_args_with_default_trinity_chat_template(
+        [
+            "--model",
+            "arcee-ai/Trinity-Mini",
+            "--chat-template",
+            "/custom/template.jinja",
+        ]
+    )
+
+    assert gateway_args.count("--chat-template") == 1
+    idx = gateway_args.index("--chat-template")
+    assert gateway_args[idx + 1] == "/custom/template.jinja"
+
+
+def test_local_afmoe_generation_template_gets_trinity_fallback(tmp_path):
+    (tmp_path / "config.json").write_text(json.dumps({"model_type": "afmoe"}))
+    (tmp_path / "tokenizer_config.json").write_text(
+        json.dumps({"chat_template": "prefix {% generation %} suffix"})
+    )
+
+    assert _needs_trinity_chat_template(str(tmp_path))
+
+
+def test_local_afmoe_thinking_template_gets_thinking_fallback(tmp_path):
+    (tmp_path / "config.json").write_text(json.dumps({"model_type": "afmoe"}))
+    (tmp_path / "tokenizer_config.json").write_text(
+        json.dumps({"chat_template": "prefix {% generation %}<think> suffix"})
+    )
+
+    assert _trinity_uses_thinking_prompt(str(tmp_path))
+    assert os.path.basename(_trinity_chat_template_path(str(tmp_path))) == (
+        "trinity_thinking.jinja"
+    )
+
+
+def test_local_afmoe_regular_template_does_not_get_trinity_fallback(tmp_path):
+    (tmp_path / "config.json").write_text(json.dumps({"model_type": "afmoe"}))
+    (tmp_path / "tokenizer_config.json").write_text(
+        json.dumps({"chat_template": "plain template"})
+    )
+
+    assert not _needs_trinity_chat_template(str(tmp_path))
 
 
 def test_gateway_args_default_log_level_is_warn():

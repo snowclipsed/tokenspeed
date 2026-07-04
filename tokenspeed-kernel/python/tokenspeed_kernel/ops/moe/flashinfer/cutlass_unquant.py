@@ -20,6 +20,8 @@
 
 from __future__ import annotations
 
+import threading
+
 import torch
 from tokenspeed_kernel.platform import (
     ArchVersion,
@@ -31,6 +33,28 @@ from tokenspeed_kernel.signature import format_signatures
 
 platform = current_platform()
 next_power_of_2 = lambda value: 1 if value <= 1 else 1 << (value - 1).bit_length()
+_AUTOTUNED_BUCKETS_ATTR = "_flashinfer_cutlass_unquant_autotuned_buckets"
+_AUTOTUNE_LOCK_ATTR = "_flashinfer_cutlass_unquant_autotune_lock"
+
+
+def _tune_max_num_tokens(num_tokens: int) -> int:
+    return max(8192, next_power_of_2(num_tokens))
+
+
+def _autotuned_buckets(w: torch.nn.Module) -> set[int]:
+    buckets = getattr(w, _AUTOTUNED_BUCKETS_ATTR, None)
+    if buckets is None:
+        buckets = set()
+        setattr(w, _AUTOTUNED_BUCKETS_ATTR, buckets)
+    return buckets
+
+
+def _autotune_lock(w: torch.nn.Module) -> threading.Lock:
+    lock = getattr(w, _AUTOTUNE_LOCK_ATTR, None)
+    if lock is None:
+        lock = threading.Lock()
+        setattr(w, _AUTOTUNE_LOCK_ATTR, lock)
+    return lock
 
 
 if platform.is_nvidia:
@@ -91,7 +115,10 @@ if platform.is_nvidia:
             )
             topk_weights = topk_weights / topk_weights.sum(dim=-1, keepdim=True)
             topk_weights = topk_weights.to(x.dtype)
-        with flashinfer_autotune():
+
+        tune_max_num_tokens = _tune_max_num_tokens(x.shape[0])
+
+        def call_cutlass_fused_moe():
             return cutlass_fused_moe(
                 input=x,
                 token_selected_experts=topk_ids.to(torch.int),
@@ -104,6 +131,16 @@ if platform.is_nvidia:
                 ep_rank=getattr(w, "ep_rank", 0),
                 tp_size=getattr(w, "tp_size", 1),
                 tp_rank=getattr(w, "tp_rank", 0),
-                tune_max_num_tokens=max(8192, next_power_of_2(x.shape[0])),
+                tune_max_num_tokens=tune_max_num_tokens,
                 activation_type=ActivationType.Swiglu,
             )[0]
+
+        buckets = _autotuned_buckets(w)
+        if tune_max_num_tokens not in buckets:
+            with _autotune_lock(w):
+                if tune_max_num_tokens not in buckets:
+                    with flashinfer_autotune():
+                        call_cutlass_fused_moe()
+                    buckets.add(tune_max_num_tokens)
+
+        return call_cutlass_fused_moe()

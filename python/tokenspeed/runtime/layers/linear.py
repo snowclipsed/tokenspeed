@@ -190,7 +190,14 @@ class LinearBase(torch.nn.Module):
                 # remain unquantized unless the checkpoint stores dense MXFP4.
                 self.quant_method = UnquantizedLinearMethod()
         elif isinstance(quant_config, CompressedTensorsConfig):
-            self.quant_method = quant_config.get_quant_method(self, prefix)
+            if quant_config.is_fp8_block_quantized():
+                self.quant_method = Fp8LinearMethod(quant_config)
+            else:
+                self.scheme = quant_config.get_scheme(self, prefix)
+                if self.scheme is None:
+                    self.quant_method = UnquantizedLinearMethod()
+                else:
+                    self.quant_method = quant_config.get_linear_method()
         else:
             if isinstance(quant_config, Fp8Config):
                 self.quant_method = Fp8LinearMethod(quant_config)

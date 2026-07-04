@@ -110,6 +110,10 @@ class CompressedTensorsConfig(QuantizationConfig):
         self.config = config
         _packed_modules_mapping = {"qkv_proj": ["q_proj", "k_proj", "v_proj"]}
         self.packed_modules_mapping = packed_modules_mapping or _packed_modules_mapping
+        self.weight_block_size = self._resolve_fp8_block_size()
+        self.is_checkpoint_fp8_serialized = self.weight_block_size is not None
+        self.activation_scheme = "dynamic"
+        self.scale_fmt = None
 
     def get_linear_method(self) -> CompressedTensorsLinearMethod:
         return CompressedTensorsLinearMethod(self)
@@ -130,12 +134,15 @@ class CompressedTensorsConfig(QuantizationConfig):
         # (Kimi-K2.5 / K2.6 / K2.7, weight-only + bf16 group scales) are wired.
         weight_quant = self.target_scheme_map["Linear"].get("weights")
         input_quant = self.target_scheme_map["Linear"].get("input_activations")
+        if self._is_fp8_block_quantization(weight_quant, input_quant):
+            return "fp8"
         if (
             weight_quant is not None
             and self._is_wNa16_group_channel(weight_quant, input_quant)
-            and weight_quant.type == QuantizationType.INT
+            and self._quant_value(weight_quant.type) == QuantizationType.INT.value
             and weight_quant.num_bits == 4
-            and weight_quant.strategy == QuantizationStrategy.GROUP.value
+            and self._quant_value(weight_quant.strategy)
+            == QuantizationStrategy.GROUP.value
             and weight_quant.group_size == 32
             and not weight_quant.actorder
         ):
@@ -333,6 +340,66 @@ class CompressedTensorsConfig(QuantizationConfig):
         is_static = not weight_quant.dynamic
 
         return is_channel_group and input_quant_none and is_symmetric and is_static
+
+    @staticmethod
+    def _quant_value(value: Any) -> Any:
+        return getattr(value, "value", value)
+
+    def _is_fp8_block_quantization(
+        self, weight_quant: BaseModel | None, input_quant: BaseModel | None
+    ) -> bool:
+        if weight_quant is None or input_quant is None:
+            return False
+        if self.quant_format != CompressionFormat.float_quantized.value:
+            return False
+
+        weight_type = self._quant_value(weight_quant.type)
+        input_type = self._quant_value(input_quant.type)
+        weight_strategy = self._quant_value(weight_quant.strategy)
+        input_strategy = self._quant_value(input_quant.strategy)
+        block_structure = getattr(weight_quant, "block_structure", None)
+        if block_structure is None or len(block_structure) != 2:
+            return False
+
+        return (
+            weight_type == QuantizationType.FLOAT.value
+            and input_type == QuantizationType.FLOAT.value
+            and weight_quant.num_bits == 8
+            and input_quant.num_bits == 8
+            and weight_strategy == QuantizationStrategy.BLOCK.value
+            and input_strategy
+            in {
+                QuantizationStrategy.GROUP.value,
+                QuantizationStrategy.TENSOR.value,
+                QuantizationStrategy.TOKEN.value,
+            }
+            and bool(weight_quant.symmetric)
+            and bool(input_quant.symmetric)
+            and not bool(weight_quant.dynamic)
+            and bool(input_quant.dynamic)
+        )
+
+    def _resolve_fp8_block_size(self) -> list[int] | None:
+        block_sizes: list[tuple[int, int]] = []
+        for scheme in self.target_scheme_map.values():
+            weight_quant = scheme.get("weights") if scheme is not None else None
+            input_quant = scheme.get("input_activations") if scheme is not None else None
+            if self._is_fp8_block_quantization(weight_quant, input_quant):
+                block_sizes.append(tuple(weight_quant.block_structure))
+
+        if not block_sizes:
+            return None
+
+        block_size = block_sizes[0]
+        if any(size != block_size for size in block_sizes):
+            raise ValueError(
+                "compressed-tensors FP8 block quantization with mixed block sizes "
+                f"is not supported: {block_sizes}"
+            )
+        return list(block_size)
+
+    def is_fp8_block_quantized(self) -> bool:
+        return self.weight_block_size is not None
 
     def _get_scheme_from_parts(
         self, weight_quant: BaseModel, input_quant: BaseModel

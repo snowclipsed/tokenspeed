@@ -24,10 +24,15 @@ The implementation uses TRT-LLM CUDA kernels exposed as torch.ops.trtllm /
 torch.ops.tensorrt_llm.
 """
 
+import logging
+import os
+
 import torch
+from packaging.version import InvalidVersion, Version
 from tokenspeed_kernel.platform import current_platform
 from tokenspeed_kernel.registry import error_fn
 
+logger = logging.getLogger(__name__)
 platform = current_platform()
 
 dsv3_fused_a_gemm = error_fn
@@ -36,6 +41,31 @@ per_token_group_quant_8bit = error_fn
 per_tensor_quant_fp8 = error_fn
 per_token_quant_fp8 = error_fn
 fast_topk_v2 = error_fn
+trtllm_kernel_available = False
+
+
+def _torch_version() -> Version | None:
+    raw_version = torch.__version__.split("+", 1)[0]
+    try:
+        return Version(raw_version)
+    except InvalidVersion:
+        return None
+
+
+def _should_try_trtllm_kernel() -> bool:
+    if os.environ.get("TOKENSPEED_FORCE_TRTLLM_KERNEL") == "1":
+        return True
+
+    version = _torch_version()
+    if version is not None and version >= Version("2.12"):
+        logger.info(
+            "Skipping tokenspeed-trtllm-kernel for torch %s; the published "
+            "wheel targets the pre-2.12 torch C++ ABI.",
+            torch.__version__,
+        )
+        return False
+
+    return True
 
 # deep_ep_cpp MUST be loaded before trtllm_kernel.  libtensorrt_llm.so
 # statically links libcudart_static.a, creating a second CUDA runtime in
@@ -45,7 +75,7 @@ fast_topk_v2 = error_fn
 # cudart in libtensorrt_llm initializes first, it corrupts this state in
 # the global libcudart.so.13, and all 820+ kernel registrations from
 # deep_ep_cpp silently fail (cudaFuncGetAttributes returns rc=400).
-if platform.is_nvidia:
+if platform.is_nvidia and _should_try_trtllm_kernel():
     deep_ep_cpp_loaded = False
     try:
         import deep_ep_cpp  # noqa: F401 — triggers .init_array CUDA registration
@@ -64,6 +94,7 @@ if platform.is_nvidia:
             trtllm_kernel_loaded = True
 
     if trtllm_kernel_loaded:
+        trtllm_kernel_available = True
 
         # DSv3 min-latency fused-A projection (hidden→q_a‖kv_a_mqa). On SM≥90
         # with bf16 and shape [1..16, 7168] × [7168, 2112], trtllm fires a

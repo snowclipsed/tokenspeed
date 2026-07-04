@@ -30,10 +30,13 @@ from tokenspeed_kernel.platform import ArchVersion, CapabilityRequirement
 from tokenspeed_kernel.registry import Priority, register_kernel
 from tokenspeed_kernel.signature import ScaleFormat, format_signature, tensor_format
 
-# Re-exported
-# dsv3_fused_a_gemm supports specific shapes only (see python/tokenspeed/runtime/models/deepseek_v3.py);
-# call such kernels manually rather than by register_kernel.
-from tokenspeed_kernel.thirdparty.trtllm import dsv3_fused_a_gemm  # noqa: F401
+# Re-exported. dsv3_fused_a_gemm supports specific shapes only (see
+# python/tokenspeed/runtime/models/deepseek_v3.py); call such kernels manually
+# rather than by register_kernel.
+from tokenspeed_kernel.thirdparty.trtllm import (  # noqa: F401
+    dsv3_fused_a_gemm,
+    trtllm_kernel_available,
+)
 
 _fp4_dtypes: frozenset[torch.dtype] = frozenset({torch.uint8, torch.float4_e2m1fn_x2})
 _NVFP4_SCALE_DTYPES: frozenset[torch.dtype] = frozenset(
@@ -61,50 +64,49 @@ _NVFP4_FORMAT_SIGNATURES = frozenset(
     for b_scale_dtype in _NVFP4_SCALE_DTYPES
 )
 
-# One stateful torchbind instance per output dtype. Each holds its own
-# per-shape algo cache inside C++.
-_runner_cache: dict[torch.dtype, object] = {}
-_CUBLASLT_HEURISTIC_ALGO = 0
+if trtllm_kernel_available:
+    # One stateful torchbind instance per output dtype. Each holds its own
+    # per-shape algo cache inside C++.
+    _runner_cache: dict[torch.dtype, object] = {}
+    _CUBLASLT_HEURISTIC_ALGO = 0
 
+    def _get_runner(out_dtype: torch.dtype):
+        runner = _runner_cache.get(out_dtype)
+        if runner is None:
+            runner = torch.classes.trtllm.CublasLtFP4GemmRunner(out_dtype)
+            _runner_cache[out_dtype] = runner
+        return runner
 
-def _get_runner(out_dtype: torch.dtype):
-    runner = _runner_cache.get(out_dtype)
-    if runner is None:
-        runner = torch.classes.trtllm.CublasLtFP4GemmRunner(out_dtype)
-        _runner_cache[out_dtype] = runner
-    return runner
-
-
-@register_kernel(
-    "gemm",
-    "mm",
-    name="cublaslt_mm_nvfp4",
-    solution="cublas",
-    capability=CapabilityRequirement(
-        min_arch_version=ArchVersion(10, 0),
-        vendors=frozenset({"nvidia"}),
-    ),
-    signatures=_NVFP4_FORMAT_SIGNATURES,
-    traits={},
-    priority=Priority.SPECIALIZED + 3,
-)
-def cublaslt_mm_nvfp4(
-    A: torch.Tensor,
-    B: torch.Tensor,
-    A_scales: torch.Tensor,
-    B_scales: torch.Tensor,
-    out_dtype: torch.dtype,
-    *,
-    alpha: torch.Tensor,
-    block_size: list[int] | None = None,
-) -> torch.Tensor:
-    runner = _get_runner(out_dtype)
-    return runner.run_gemm(
-        A,
-        B.T,
-        A_scales,
-        B_scales.T,
-        alpha,
-        False,
-        _CUBLASLT_HEURISTIC_ALGO,
+    @register_kernel(
+        "gemm",
+        "mm",
+        name="cublaslt_mm_nvfp4",
+        solution="cublas",
+        capability=CapabilityRequirement(
+            min_arch_version=ArchVersion(10, 0),
+            vendors=frozenset({"nvidia"}),
+        ),
+        signatures=_NVFP4_FORMAT_SIGNATURES,
+        traits={},
+        priority=Priority.SPECIALIZED + 3,
     )
+    def cublaslt_mm_nvfp4(
+        A: torch.Tensor,
+        B: torch.Tensor,
+        A_scales: torch.Tensor,
+        B_scales: torch.Tensor,
+        out_dtype: torch.dtype,
+        *,
+        alpha: torch.Tensor,
+        block_size: list[int] | None = None,
+    ) -> torch.Tensor:
+        runner = _get_runner(out_dtype)
+        return runner.run_gemm(
+            A,
+            B.T,
+            A_scales,
+            B_scales.T,
+            alpha,
+            False,
+            _CUBLASLT_HEURISTIC_ALGO,
+        )

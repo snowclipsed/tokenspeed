@@ -30,6 +30,7 @@ import logging
 import os
 import signal
 import sys
+from importlib import resources
 from pathlib import Path
 
 from tokenspeed.cli._argsplit import OrchestratorOpts, split_argv
@@ -54,6 +55,9 @@ DEEPSEEK_V4_REASONING_PARSER = "deepseek_v31"
 DEEPSEEK_V4_TOOL_CALL_PARSER = "deepseek_v4"
 GLM_REASONING_PARSER = "glm45"
 GLM_TOOL_CALL_PARSER = "glm47_moe"
+TRINITY_CHAT_TEMPLATE_PACKAGE = "tokenspeed.cli.chat_templates"
+TRINITY_CHAT_TEMPLATE_RESOURCE = "trinity_basic.jinja"
+TRINITY_THINKING_CHAT_TEMPLATE_RESOURCE = "trinity_thinking.jinja"
 DEFAULT_SMG_LOG_LEVEL = "warn"
 DEFAULT_SMG_PROMETHEUS_PORT = 8413
 # smg routing policy for ``ts serve``. Distinct from DEFAULT_REASONING_PARSER,
@@ -272,6 +276,133 @@ def _is_glm_dsa_model(model_id: str | None) -> bool:
     )
 
 
+def _is_local_afmoe_config(model_id: str | None) -> bool:
+    if not model_id:
+        return False
+
+    config_path = Path(model_id) / "config.json"
+    if not config_path.is_file():
+        return False
+    try:
+        with config_path.open() as f:
+            config = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return False
+    if not isinstance(config, dict):
+        return False
+    architectures = config.get("architectures") or []
+    return config.get("model_type") == "afmoe" or any(
+        arch == "AfmoeForCausalLM" for arch in architectures
+    )
+
+
+def _local_chat_template_uses_generation_block(model_id: str | None) -> bool:
+    if not model_id:
+        return False
+
+    tokenizer_config_path = Path(model_id) / "tokenizer_config.json"
+    if not tokenizer_config_path.is_file():
+        return False
+    try:
+        with tokenizer_config_path.open() as f:
+            tokenizer_config = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return False
+    if not isinstance(tokenizer_config, dict):
+        return False
+
+    chat_template = tokenizer_config.get("chat_template")
+    if isinstance(chat_template, str):
+        return "{% generation" in chat_template
+    if isinstance(chat_template, list):
+        return any(
+            isinstance(template, dict)
+            and isinstance(template.get("template"), str)
+            and "{% generation" in template["template"]
+            for template in chat_template
+        )
+    return False
+
+
+def _local_chat_template_uses_thinking_prompt(model_id: str | None) -> bool:
+    if not model_id:
+        return False
+
+    tokenizer_config_path = Path(model_id) / "tokenizer_config.json"
+    if not tokenizer_config_path.is_file():
+        return False
+    try:
+        with tokenizer_config_path.open() as f:
+            tokenizer_config = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return False
+    if not isinstance(tokenizer_config, dict):
+        return False
+
+    chat_template = tokenizer_config.get("chat_template")
+    if isinstance(chat_template, str):
+        return "<think>" in chat_template
+    if isinstance(chat_template, list):
+        return any(
+            isinstance(template, dict)
+            and isinstance(template.get("template"), str)
+            and "<think>" in template["template"]
+            for template in chat_template
+        )
+    return False
+
+
+def _needs_trinity_chat_template(model_id: str | None) -> bool:
+    if not model_id:
+        return False
+
+    normalized = model_id.lower().replace("_", "-")
+    compact = normalized.replace("-", "")
+    if "trinity" in normalized or "trinity" in compact:
+        return True
+
+    return (
+        _is_local_afmoe_config(model_id)
+        and _local_chat_template_uses_generation_block(model_id)
+    )
+
+
+def _trinity_uses_thinking_prompt(model_id: str | None) -> bool:
+    if not model_id:
+        return False
+
+    normalized = model_id.lower().replace("_", "-")
+    compact = normalized.replace("-", "")
+    if "thinking" in normalized or "trinitymini" in compact:
+        return True
+
+    return _local_chat_template_uses_thinking_prompt(model_id)
+
+
+def _trinity_chat_template_path(model_id: str | None = None) -> str:
+    resource = (
+        TRINITY_THINKING_CHAT_TEMPLATE_RESOURCE
+        if _trinity_uses_thinking_prompt(model_id)
+        else TRINITY_CHAT_TEMPLATE_RESOURCE
+    )
+    return str(
+        resources.files(TRINITY_CHAT_TEMPLATE_PACKAGE).joinpath(resource)
+    )
+
+
+def _gateway_args_with_default_trinity_chat_template(
+    gateway_args: list[str],
+) -> list[str]:
+    if "--chat-template" in gateway_args:
+        return gateway_args
+
+    model_id = _user_model_id(gateway_args)
+    if not _needs_trinity_chat_template(model_id):
+        return gateway_args
+
+    return [*gateway_args, "--chat-template", _trinity_chat_template_path(model_id)]
+
+
 def _args_with_default_model_parsers(
     engine_args: list[str], gateway_args: list[str]
 ) -> tuple[list[str], list[str]]:
@@ -343,6 +474,7 @@ def _gateway_args_with_defaults(gateway_args: list[str]) -> list[str]:
     gateway_args = _gateway_args_with_default_reasoning_parser(gateway_args)
     gateway_args = _gateway_args_with_smg_disable_defaults(gateway_args)
     gateway_args = _gateway_args_with_default_policy(gateway_args)
+    gateway_args = _gateway_args_with_default_trinity_chat_template(gateway_args)
     gateway_args = _gateway_args_with_default_tokenizer_cache(gateway_args)
     gateway_args = _gateway_args_with_default_log_level(gateway_args)
     return _gateway_args_with_default_prometheus_port(gateway_args)

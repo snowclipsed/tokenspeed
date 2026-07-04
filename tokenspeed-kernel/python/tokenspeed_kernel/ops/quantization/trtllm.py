@@ -23,6 +23,7 @@ import torch
 from tokenspeed_kernel.platform import current_platform
 from tokenspeed_kernel.registry import Priority, error_fn, register_kernel
 from tokenspeed_kernel.signature import format_signatures
+from tokenspeed_kernel.thirdparty.trtllm import trtllm_kernel_available
 
 platform = current_platform()
 
@@ -30,7 +31,7 @@ trtllm_fp8_token_group_128 = error_fn
 trtllm_fp8_token = error_fn
 trtllm_fp8_tensor = error_fn
 
-if platform.is_nvidia:
+if platform.is_nvidia and trtllm_kernel_available:
     from tokenspeed_kernel.thirdparty.trtllm import (
         per_tensor_quant_fp8 as _trtllm_per_tensor_quant_fp8,
     )
