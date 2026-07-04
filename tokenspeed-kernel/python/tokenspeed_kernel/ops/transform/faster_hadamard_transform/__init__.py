@@ -20,17 +20,32 @@
 
 from __future__ import annotations
 
+import logging
+
 import torch
 from tokenspeed_kernel.platform import CapabilityRequirement, current_platform
 from tokenspeed_kernel.registry import Priority, register_kernel
 from tokenspeed_kernel.signature import format_signatures
 
+logger = logging.getLogger(__name__)
 platform = current_platform()
 
+_native_hadamard_transform = None
+_native_import_error: BaseException | None = None
 
 if platform.is_nvidia:
-    from fast_hadamard_transform import hadamard_transform
+    try:
+        from fast_hadamard_transform import hadamard_transform as _native_hadamard_transform
+    except (ImportError, OSError) as exc:
+        _native_import_error = exc
+        logger.debug(
+            "Skipping fast_hadamard_transform backend registration: %s",
+            exc,
+            exc_info=True,
+        )
 
+
+if _native_hadamard_transform is not None:
     @register_kernel(
         "transform",
         "hadamard_transform",
@@ -45,7 +60,23 @@ if platform.is_nvidia:
         *,
         scale: float = 1.0,
     ) -> torch.Tensor:
-        return hadamard_transform(x, scale=scale)
+        return _native_hadamard_transform(x, scale=scale)
+else:
+
+    def fast_hadamard_transform(
+        x: torch.Tensor,
+        *,
+        scale: float = 1.0,
+    ) -> torch.Tensor:
+        if not platform.is_nvidia:
+            raise RuntimeError(
+                "fast_hadamard_transform is only available on NVIDIA platforms"
+            )
+        raise RuntimeError(
+            "fast_hadamard_transform is unavailable. Install a "
+            "tokenspeed-fast-hadamard-transform wheel built for the active "
+            "Torch/CUDA ABI, or use solution='triton' for supported shapes."
+        ) from _native_import_error
 
 
 __all__ = ["fast_hadamard_transform"]

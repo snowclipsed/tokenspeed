@@ -70,7 +70,6 @@ from tokenspeed.runtime.execution.types import ModelExecutionResult
 from tokenspeed.runtime.grammar.capturable_grammar import GrammarStepInputs
 from tokenspeed.runtime.layers.attention.registry import create_attn_components
 from tokenspeed.runtime.metrics.collector import EngineMetrics
-from tokenspeed.runtime.pd.decode_executor import DisaggDecodeExecutor
 from tokenspeed.runtime.pd.factory import (
     create_pd_kv_transfer,
     get_kv_args,
@@ -82,8 +81,6 @@ from tokenspeed.runtime.pd.kv_events import (
     drain_scheduler_kv_events,
     scheduler_kv_events_to_wire_events,
 )
-from tokenspeed.runtime.pd.mooncake.entities import ManagerArgs
-from tokenspeed.runtime.pd.prefill_executor import DisaggPrefillExecutor
 from tokenspeed.runtime.sampling.sampling_params import SamplingParams
 from tokenspeed.runtime.utils import (
     configure_logger,
@@ -97,6 +94,27 @@ from tokenspeed.runtime.utils.server_args import PortArgs, ServerArgs
 from tokenspeed.runtime.utils.torch_memory_saver_adapter import TorchMemorySaverAdapter
 
 logger = get_colorful_logger(__name__)
+
+
+class _UnavailableDisaggExecutor:
+    pass
+
+
+DisaggDecodeExecutor = _UnavailableDisaggExecutor
+DisaggPrefillExecutor = _UnavailableDisaggExecutor
+
+
+def _load_pd_transfer_types():
+    global DisaggDecodeExecutor, DisaggPrefillExecutor
+
+    from tokenspeed.runtime.pd.decode_executor import DisaggDecodeExecutor as decode_cls
+    from tokenspeed.runtime.pd.prefill_executor import (
+        DisaggPrefillExecutor as prefill_cls,
+    )
+
+    DisaggDecodeExecutor = decode_cls
+    DisaggPrefillExecutor = prefill_cls
+    return decode_cls, prefill_cls
 
 
 def calc_l3_query_hashes(scheduler, tokens: list[int]) -> list[str]:
@@ -458,6 +476,9 @@ class EventLoop:
         self.prefetch_threshold = scheduler_cfg.prefetch_threshold
 
         if server_args.disaggregation_mode != "null":
+            _load_pd_transfer_types()
+            from tokenspeed.runtime.pd.mooncake.entities import ManagerArgs
+
             kv_args = get_kv_args(
                 global_rank,
                 global_rank,

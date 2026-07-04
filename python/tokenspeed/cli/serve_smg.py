@@ -76,10 +76,16 @@ _DEFAULT_SMG_DISABLE_FLAGS = (
 def _check_serve_extra_installed() -> None:
     import importlib.util
 
+    def has_module(module: str) -> bool:
+        try:
+            return importlib.util.find_spec(module) is not None
+        except ModuleNotFoundError:
+            return False
+
     missing: list[str] = []
-    if importlib.util.find_spec("smg") is None:
+    if not has_module("smg"):
         missing.append("tokenspeed-smg")
-    if importlib.util.find_spec("smg_grpc_servicer.tokenspeed.server") is None:
+    if not has_module("smg_grpc_servicer.tokenspeed.server"):
         missing.append("tokenspeed-smg-grpc-servicer")
     if missing:
         sys.stderr.write(

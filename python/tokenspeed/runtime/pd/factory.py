@@ -20,14 +20,18 @@
 
 """Factories for disaggregation KV transfer helpers."""
 
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
 from tokenspeed.runtime.pd.base import KVArgs
-from tokenspeed.runtime.pd.decode_executor import DisaggDecodeExecutor
-from tokenspeed.runtime.pd.mooncake.entities import ManagerArgs
-from tokenspeed.runtime.pd.prefill_executor import DisaggPrefillExecutor
 from tokenspeed.runtime.pd.utils import (
     DisaggregationMode,
     TransferBackend,
 )
+
+if TYPE_CHECKING:
+    from tokenspeed.runtime.pd.mooncake.entities import ManagerArgs
 
 
 def _get_contiguous_buf_unit_lens(pool, item_lens):
@@ -137,8 +141,12 @@ def create_pd_kv_transfer(
     page_size,
 ):
     if mode == "prefill":
+        from tokenspeed.runtime.pd.prefill_executor import DisaggPrefillExecutor
+
         return DisaggPrefillExecutor(backend, args, kv_args, gloo_group, page_size)
     elif mode == "decode":
+        from tokenspeed.runtime.pd.decode_executor import DisaggDecodeExecutor
+
         return DisaggDecodeExecutor(backend, args, kv_args, gloo_group, page_size)
     else:
         raise NotImplementedError(f"Unsupported disaggregation mode: {mode}")

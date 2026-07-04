@@ -27,7 +27,6 @@ from typing import TYPE_CHECKING
 
 import torch
 import zmq
-from viztracer import VizTracer
 
 from tokenspeed.runtime.distributed.process_group_manager import (
     process_group_manager as pg_manager,
@@ -346,6 +345,19 @@ class RequestHandler:
         with_stack = self.torch_profiler_with_stack
         record_shapes = self.torch_profiler_record_shapes
 
+        viztracer_cls = None
+        if "VIZTRACER" in activities:
+            try:
+                from viztracer import VizTracer as viztracer_cls
+            except ImportError:
+                return ProfileReqOutput(
+                    success=False,
+                    message=(
+                        "VIZTRACER profiling requires the optional `viztracer` "
+                        "package to be installed."
+                    ),
+                )
+
         activity_map = {
             "CPU": torch.profiler.ProfilerActivity.CPU,
             "GPU": torch.profiler.ProfilerActivity.CUDA,
@@ -370,7 +382,7 @@ class RequestHandler:
 
         if "VIZTRACER" in activities:
             Path(self.profiler_output_dir).mkdir(parents=True, exist_ok=True)
-            self.viztracer = VizTracer(
+            self.viztracer = viztracer_cls(
                 output_file=os.path.join(
                     self.profiler_output_dir,
                     f"{self.profile_id}-TP-{self.attn_tp_rank}{stage_suffix}.viztracer.json",

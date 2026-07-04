@@ -31,24 +31,34 @@ from tokenspeed_kernel._triton import redirect_triton_to_tokenspeed_triton, tl, 
 # to the vendored ``tokenspeed_triton`` so iris and tokenspeed-kernel share a
 # single triton distribution. See
 # :func:`redirect_triton_to_tokenspeed_triton` for details.
-with redirect_triton_to_tokenspeed_triton():
-    import iris  # noqa: E402
+_IRIS_IMPORT_ERROR: BaseException | None = None
 
-    # Pre-import every iris kernel module that does ``import triton`` at module
-    # load time (the CCL APIs above lazy-import them at call time, when the
-    # redirect is no longer active).
-    import iris.ccl.triton  # noqa: E402
-    from iris.ccl import Config as _IrisConfig  # noqa: E402
-    from iris.ccl.all_gather import all_gather as _iris_all_gather  # noqa: E402
-    from iris.ccl.all_reduce import all_reduce as _iris_all_reduce  # noqa: E402
-    from iris.ccl.reduce_scatter import (  # noqa: E402
-        reduce_scatter as _iris_reduce_scatter,
-    )
+try:
+    with redirect_triton_to_tokenspeed_triton():
+        import iris  # noqa: E402
 
-    for _info in pkgutil.walk_packages(
-        iris.ccl.triton.__path__, prefix="iris.ccl.triton."
-    ):
-        importlib.import_module(_info.name)
+        # Pre-import every iris kernel module that does ``import triton`` at
+        # module load time (the CCL APIs above lazy-import them at call time,
+        # when the redirect is no longer active).
+        import iris.ccl.triton  # noqa: E402
+        from iris.ccl import Config as _IrisConfig  # noqa: E402
+        from iris.ccl.all_gather import all_gather as _iris_all_gather  # noqa: E402
+        from iris.ccl.all_reduce import all_reduce as _iris_all_reduce  # noqa: E402
+        from iris.ccl.reduce_scatter import (  # noqa: E402
+            reduce_scatter as _iris_reduce_scatter,
+        )
+
+        for _info in pkgutil.walk_packages(
+            iris.ccl.triton.__path__, prefix="iris.ccl.triton."
+        ):
+            importlib.import_module(_info.name)
+except (ImportError, OSError) as exc:
+    iris = None
+    _IrisConfig = None
+    _iris_all_gather = None
+    _iris_all_reduce = None
+    _iris_reduce_scatter = None
+    _IRIS_IMPORT_ERROR = exc
 
 from tokenspeed_kernel.platform import current_platform  # noqa: E402
 
@@ -72,6 +82,14 @@ __all__ = [
 IRIS_AR_RMSNORM_STATES: dict = {}
 
 
+def _require_iris() -> None:
+    if _IRIS_IMPORT_ERROR is not None:
+        raise RuntimeError(
+            "Iris communication backend is unavailable. Install a compatible "
+            "`tokenspeed-iris` package before selecting the Iris backend."
+        ) from _IRIS_IMPORT_ERROR
+
+
 def _get_available_gpu_memory(gpu_id: int, empty_cache: bool = True) -> float:
     if torch.cuda.is_available():
         with torch.cuda.device(gpu_id):
@@ -87,6 +105,7 @@ _iris_ctx_singleton = None
 
 def _get_or_create_iris_context(heap_size: int):
     global _iris_ctx_singleton
+    _require_iris()
     if _iris_ctx_singleton is None:
         _iris_ctx_singleton = iris.iris(heap_size=heap_size)
     return _iris_ctx_singleton
@@ -651,6 +670,7 @@ def create_iris_state(
     heap_size: int | None = None,
     device: torch.device = None,
 ) -> "IrisAllReduce":
+    _require_iris()
     return IrisAllReduce(
         group=group,
         rank_in_group=rank_in_group,
@@ -668,6 +688,7 @@ def iris_all_reduce(
     safe: bool = True,
     async_op: bool = False,
 ) -> torch.Tensor:
+    _require_iris()
     return state.all_reduce(tensor, op=op, safe=safe, async_op=async_op)
 
 
@@ -679,6 +700,7 @@ def create_iris_rsag_state(
     device: torch.device = None,
     heap_size: int | None = None,
 ) -> "IrisRSAG":
+    _require_iris()
     return IrisRSAG(
         group=group,
         rank_in_group=rank_in_group,
@@ -699,6 +721,7 @@ def create_iris_ar_rmsnorm_state(
     device: torch.device = None,
     persistent: bool = False,
 ) -> "IrisAllReduceResidualRMSNorm":
+    _require_iris()
     return IrisAllReduceResidualRMSNorm(
         group=group,
         rank_in_group=rank_in_group,
@@ -720,6 +743,7 @@ def iris_allreduce_residual_rmsnorm(
     norm_out: torch.Tensor | None = None,
     residual_out: torch.Tensor | None = None,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
+    _require_iris()
     return state.fused(
         input_tensor=input_tensor,
         residual=residual,
