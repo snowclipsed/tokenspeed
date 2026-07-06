@@ -1,0 +1,3 @@
+[submodule "tokenspeed-kernel/python/tokenspeed_kernel/thirdparty/cuda/csrc/vendor/cutlass"]
+	path = tokenspeed-kernel/python/tokenspeed_kernel/thirdparty/cuda/csrc/vendor/cutlass
+	url = https://github.com/NVIDIA/cutlass.git

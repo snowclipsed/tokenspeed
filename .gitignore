@@ -92,6 +92,7 @@ celerybeat.pid
 .env
 .envrc
 .venv
+.venv-*/
 env/
 venv/
 ENV/
@@ -176,6 +177,9 @@ cython_debug/
 Build/
 build-*/
 build_*/
+tokenspeed-kernel/python/tokenspeed_kernel/thirdparty/cuda/objs/
+tokenspeed-scheduler/build/
+tokenspeed-mla/python/tokenspeed_mla/objs/
 
 # CMake generated files
 CMakeFiles/
@@ -196,3 +200,7 @@ Testing/
 .serena/*
 
 AGENTS.local.md
+
+# Local experiments, timing runs, and scratch outputs
+.tmp/
+.reference-repos/

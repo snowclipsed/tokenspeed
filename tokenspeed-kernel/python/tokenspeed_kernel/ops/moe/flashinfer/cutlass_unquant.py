@@ -20,6 +20,7 @@
 
 from __future__ import annotations
 
+import os
 import threading
 
 import torch
@@ -58,8 +59,38 @@ def _autotune_lock(w: torch.nn.Module) -> threading.Lock:
 
 
 if platform.is_nvidia:
-    from flashinfer import ActivationType, cutlass_fused_moe
-    from flashinfer.autotuner import autotune as flashinfer_autotune
+    from tokenspeed_kernel.thirdparty.cuda.afmoe_cutlass_bf16_moe import (
+        ActivationType as LocalActivationType,
+        cutlass_fused_moe as local_cutlass_fused_moe,
+    )
+
+    try:
+        from flashinfer import ActivationType as FlashInferActivationType
+        from flashinfer import cutlass_fused_moe as flashinfer_cutlass_fused_moe
+        from flashinfer.autotuner import autotune as flashinfer_autotune
+    except Exception as exc:
+        FlashInferActivationType = None
+        flashinfer_cutlass_fused_moe = None
+        flashinfer_autotune = None
+        _FLASHINFER_IMPORT_ERROR = exc
+    else:
+        _FLASHINFER_IMPORT_ERROR = None
+
+    def _use_local_afmoe_bf16_cutlass(x: torch.Tensor, w: torch.nn.Module) -> bool:
+        if os.environ.get("TOKENSPEED_AFMOE_BF16_MOE_DISABLE_LOCAL"):
+            return False
+        return (
+            x.dtype == torch.bfloat16
+            and w.w13_weight.dtype == torch.bfloat16
+            and w.w2_weight.dtype == torch.bfloat16
+        )
+
+    def _require_flashinfer():
+        if flashinfer_cutlass_fused_moe is None or flashinfer_autotune is None:
+            raise RuntimeError(
+                "FlashInfer Cutlass MoE is unavailable and the local AFMoE BF16 "
+                "path does not support this request"
+            ) from _FLASHINFER_IMPORT_ERROR
 
     def flashinfer_cutlass_unquant_moe_weights(plan: dict, w: torch.nn.Module):
         half_w = w.w13_weight.shape[1] // 2
@@ -118,11 +149,11 @@ if platform.is_nvidia:
 
         tune_max_num_tokens = _tune_max_num_tokens(x.shape[0])
 
-        def call_cutlass_fused_moe():
-            return cutlass_fused_moe(
+        def call_local_cutlass_fused_moe():
+            return local_cutlass_fused_moe(
                 input=x,
                 token_selected_experts=topk_ids.to(torch.int),
-                token_final_scales=topk_weights,
+                token_final_scales=topk_weights.float(),
                 fc1_expert_weights=w.w13_weight,
                 fc2_expert_weights=w.w2_weight,
                 output_dtype=x.dtype,
@@ -132,15 +163,37 @@ if platform.is_nvidia:
                 tp_size=getattr(w, "tp_size", 1),
                 tp_rank=getattr(w, "tp_rank", 0),
                 tune_max_num_tokens=tune_max_num_tokens,
-                activation_type=ActivationType.Swiglu,
+                activation_type=LocalActivationType.Swiglu,
             )[0]
 
+        def call_flashinfer_cutlass_fused_moe():
+            _require_flashinfer()
+            return flashinfer_cutlass_fused_moe(
+                input=x,
+                token_selected_experts=topk_ids.to(torch.int),
+                token_final_scales=topk_weights.float(),
+                fc1_expert_weights=w.w13_weight,
+                fc2_expert_weights=w.w2_weight,
+                output_dtype=x.dtype,
+                quant_scales=None,
+                ep_size=getattr(w, "ep_size", 1),
+                ep_rank=getattr(w, "ep_rank", 0),
+                tp_size=getattr(w, "tp_size", 1),
+                tp_rank=getattr(w, "tp_rank", 0),
+                tune_max_num_tokens=tune_max_num_tokens,
+                activation_type=FlashInferActivationType.Swiglu,
+            )[0]
+
+        if _use_local_afmoe_bf16_cutlass(x, w):
+            return call_local_cutlass_fused_moe()
+
+        _require_flashinfer()
         buckets = _autotuned_buckets(w)
         if tune_max_num_tokens not in buckets:
             with _autotune_lock(w):
                 if tune_max_num_tokens not in buckets:
                     with flashinfer_autotune():
-                        call_cutlass_fused_moe()
+                        call_flashinfer_cutlass_fused_moe()
                     buckets.add(tune_max_num_tokens)
 
-        return call_cutlass_fused_moe()
+        return call_flashinfer_cutlass_fused_moe()

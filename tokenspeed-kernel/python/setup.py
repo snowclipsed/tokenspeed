@@ -54,6 +54,11 @@ DEFAULT_CUDA_ARCHS = ("100a", "103a")
 # CUDA kernels source and output directories
 CUDA_CSRC_DIR = THIRDPARTY_DIR / "cuda" / "csrc"
 CUDA_OBJS_DIR = THIRDPARTY_DIR / "cuda" / "objs"
+AFMOE_CUTLASS_BF16_MOE_DIR = CUDA_CSRC_DIR / "afmoe_cutlass_bf16_moe"
+AFMOE_CUTLASS_BF16_MOE_NV_INTERNAL = AFMOE_CUTLASS_BF16_MOE_DIR / "nv_internal"
+AFMOE_CUTLASS_BF16_MOE_GENERATED = (
+    AFMOE_CUTLASS_BF16_MOE_DIR / "generated" / "gemm_grouped" / "90"
+)
 
 # JIT kernels source directory (no pre-compilation, just need sources available)
 JIT_CSRC_DIR = THIRDPARTY_DIR / "jit_kernel" / "csrc"
@@ -428,6 +433,54 @@ KERNEL_GROUPS = [
         ],
         [],
     ),
+    (
+        "afmoe_cutlass_bf16_moe",
+        [
+            AFMOE_CUTLASS_BF16_MOE_DIR / "binding.cu",
+            AFMOE_CUTLASS_BF16_MOE_DIR / "cutlass_fused_moe_instantiation.cu",
+            AFMOE_CUTLASS_BF16_MOE_NV_INTERNAL
+            / "tensorrt_llm"
+            / "kernels"
+            / "cutlass_kernels"
+            / "moe_gemm"
+            / "moe_gemm_tma_warp_specialized_input.cu",
+            AFMOE_CUTLASS_BF16_MOE_NV_INTERNAL
+            / "tensorrt_llm"
+            / "kernels"
+            / "cutlass_kernels"
+            / "moe_gemm"
+            / "moe_gemm_kernels_bf16_bf16.cu",
+            AFMOE_CUTLASS_BF16_MOE_NV_INTERNAL
+            / "tensorrt_llm"
+            / "kernels"
+            / "cutlass_kernels"
+            / "cutlass_heuristic.cpp",
+            AFMOE_CUTLASS_BF16_MOE_NV_INTERNAL
+            / "tensorrt_llm"
+            / "kernels"
+            / "preQuantScaleKernel.cu",
+            AFMOE_CUTLASS_BF16_MOE_NV_INTERNAL
+            / "tensorrt_llm"
+            / "kernels"
+            / "lora"
+            / "lora.cpp",
+            AFMOE_CUTLASS_BF16_MOE_NV_INTERNAL / "cpp" / "common" / "envUtils.cpp",
+            AFMOE_CUTLASS_BF16_MOE_NV_INTERNAL / "cpp" / "common" / "logger.cpp",
+            AFMOE_CUTLASS_BF16_MOE_NV_INTERNAL / "cpp" / "common" / "memoryUtils.cu",
+            AFMOE_CUTLASS_BF16_MOE_NV_INTERNAL / "cpp" / "common" / "stringUtils.cpp",
+            AFMOE_CUTLASS_BF16_MOE_NV_INTERNAL / "cpp" / "common" / "tllmException.cpp",
+            *sorted(AFMOE_CUTLASS_BF16_MOE_GENERATED.glob("*.generated.cu")),
+        ],
+        ["-lnvrtc"],
+        [
+            "-DUSING_OSS_CUTLASS_MOE_GEMM",
+            "-DCOMPILE_HOPPER_TMA_GEMMS",
+            "-DCOMPILE_HOPPER_TMA_GROUPED_GEMMS",
+            "-DCUTLASS_ENABLE_GDC_FOR_SM90=1",
+            "-DTOKENSPEED_AFMOE_CUTLASS_BF16_ONLY",
+            "-UENABLE_FP8",
+        ],
+    ),
 ]
 
 
@@ -528,6 +581,37 @@ class CudaKernelBuilder:
         except ImportError:
             pass
 
+        # Prefer TokenSpeed-owned CUTLASS headers for local CUDA kernels.
+        vendor_dir = CUDA_CSRC_DIR / "vendor"
+        for sub in (
+            vendor_dir / "cutlass" / "include",
+            vendor_dir / "cutlass" / "tools" / "util" / "include",
+        ):
+            _add_dir(sub)
+
+        # Local AFMoE BF16 Cutlass MoE port. These include directories mirror
+        # the FlashInfer JIT spec, but the source list below is BF16-only.
+        for sub in (
+            AFMOE_CUTLASS_BF16_MOE_DIR,
+            AFMOE_CUTLASS_BF16_MOE_GENERATED,
+            AFMOE_CUTLASS_BF16_MOE_NV_INTERNAL,
+            AFMOE_CUTLASS_BF16_MOE_NV_INTERNAL / "include",
+            AFMOE_CUTLASS_BF16_MOE_NV_INTERNAL
+            / "tensorrt_llm"
+            / "cutlass_extensions"
+            / "include",
+            AFMOE_CUTLASS_BF16_MOE_NV_INTERNAL
+            / "tensorrt_llm"
+            / "kernels"
+            / "cutlass_kernels"
+            / "include",
+            AFMOE_CUTLASS_BF16_MOE_NV_INTERNAL
+            / "tensorrt_llm"
+            / "kernels"
+            / "cutlass_kernels",
+        ):
+            _add_dir(sub)
+
         # flashinfer bundles TRT-LLM internal FP4 helpers
         # (tensorrt_llm/kernels/quantization_utils.cuh: cvt_warp_fp16_to_fp4,
         # silu_and_mul, cvt_quant_to_fp4_get_sf_out_offset). Expose them so
@@ -540,6 +624,7 @@ class CudaKernelBuilder:
                 fi_root / "csrc" / "nv_internal" / "include",
                 fi_root / "include",
                 fi_root / "cutlass" / "include",
+                fi_root / "cutlass" / "tools" / "util" / "include",
             ):
                 _add_dir(sub)
             spdlog = fi_root / "spdlog" / "include"
@@ -801,7 +886,11 @@ setup(
     install_requires=_selected_install_requires(),
     packages=find_packages(),
     package_data={
-        "tokenspeed_kernel.thirdparty.cuda": ["objs/**/*.so"],
+        "tokenspeed_kernel.thirdparty.cuda": [
+            "objs/**/*.so",
+            "csrc/vendor/cutlass/include/**",
+            "csrc/vendor/cutlass/tools/util/include/**",
+        ],
     },
     cmdclass={
         "build_native": BuildNative,
