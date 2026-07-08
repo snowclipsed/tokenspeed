@@ -481,20 +481,21 @@ class AfmoeDecoderLayer(nn.Module):
         ctx: ForwardContext,
         out_cache_loc: torch.Tensor,
     ) -> torch.Tensor:
-        hidden_states = self.comm_manager.pre_attn_comm(hidden_states, ctx)
-        residual = hidden_states
+        if not ctx.forward_mode.is_idle():
+            hidden_states = self.comm_manager.pre_attn_comm(hidden_states, ctx)
+            residual = hidden_states
 
-        attn_input = self.input_layernorm(hidden_states)
-        hidden_states = self.self_attn(
-            positions=positions,
-            hidden_states=attn_input,
-            ctx=ctx,
-            out_cache_loc=out_cache_loc,
-        )
-        hidden_states, residual = self.comm_manager.post_attn_comm(
-            hidden_states, residual, ctx
-        )
-        hidden_states = residual + self.post_attention_layernorm(hidden_states)
+            attn_input = self.input_layernorm(hidden_states)
+            hidden_states = self.self_attn(
+                positions=positions,
+                hidden_states=attn_input,
+                ctx=ctx,
+                out_cache_loc=out_cache_loc,
+            )
+            hidden_states, residual = self.comm_manager.post_attn_comm(
+                hidden_states, residual, ctx
+            )
+            hidden_states = residual + self.post_attention_layernorm(hidden_states)
 
         residual = hidden_states
         hidden_states = self.pre_mlp_layernorm(hidden_states)
