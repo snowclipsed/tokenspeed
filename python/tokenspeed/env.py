@@ -57,7 +57,7 @@ PACKAGE_LIST = [
     "ninja",
     "numpy",
     "nvidia-cutlass-dsl",
-    "nvidia-cutlass-dsl-libs-cu13",
+    "nvidia-cutlass-dsl-libs-base",
     "nvidia-ml-py",
     "nvtx",
     "openai",
