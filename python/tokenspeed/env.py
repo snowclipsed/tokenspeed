@@ -90,7 +90,6 @@ PACKAGE_LIST = [
     "tokenspeed-kernel",
     "tokenspeed-kernel-amd",
     "tokenspeed-mla",
-    "tokenspeed-mooncake",
     "tokenspeed-proton",
     "tokenspeed-smg",
     "tokenspeed-smg-grpc-proto",
@@ -108,6 +107,10 @@ PACKAGE_LIST = [
     "uvloop",
     "viztracer",
     "xgrammar",
+]
+
+OPTIONAL_PACKAGE_LIST = [
+    "tokenspeed-mooncake",
 ]
 
 
@@ -328,6 +331,14 @@ def main() -> None:
     env_info.update(get_cuda_info())
     env_info["PyTorch"] = torch.__version__
     env_info.update(get_package_versions(PACKAGE_LIST))
+    env_info.update(
+        {
+            f"{package} (optional)": version
+            for package, version in get_package_versions(
+                OPTIONAL_PACKAGE_LIST
+            ).items()
+        }
+    )
 
     gpu_topo = get_gpu_topology()
     if gpu_topo:
